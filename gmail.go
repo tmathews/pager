@@ -2,12 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"io/ioutil"
 	"log"
-	"net/http"
-	"os"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -20,7 +16,8 @@ type Gmail struct {
 
 	// This is a list of all messages we have seen. We are just storing this in memory just because I don't want to
 	// write to a file.
-	Seen []string
+	Seen      []string
+	PollDelta time.Duration
 }
 
 type Mail struct {
@@ -31,28 +28,52 @@ type Mail struct {
 	Timestamp time.Time
 }
 
-func readConfig(filename string) (*oauth2.Config, error) {
+type Q string
+
+func (q Q) Get() (string, string) {
+	return "q", string(q)
+}
+
+func ReadCredentials(filename string, scope ...string) (*oauth2.Config, error) {
 	b, err := ioutil.ReadFile(filename)
 	if err != nil {
 		return nil, err
 	}
-	return google.ConfigFromJSON(b, gmail.GmailReadonlyScope)
+	return google.ConfigFromJSON(b, scope...)
 }
 
-func NewGmail(filename, token string) (*Gmail, error) {
-	config, err := readConfig(filename)
-	if err != nil {
-		return nil, err
-	}
-	tok, err := tokenFromFile(token)
-	if err != nil {
-		return nil, err
-	}
-	client := config.Client(context.Background(), tok)
+func NewGmail(config *oauth2.Config, token *oauth2.Token) (*Gmail, error) {
+	client := config.Client(context.Background(), token)
 	srv, err := gmail.New(client)
+	if err != nil {
+		return nil, err
+	}
 	return &Gmail{
 		Service: srv,
 	}, nil
+}
+
+func (g *Gmail) Run(ch chan []Mail) chan bool {
+	closer := make(chan bool)
+	go func() {
+	loop:
+		for {
+			xs, err := g.GetNewMessages()
+			if err == nil {
+				ch <- xs
+			} else {
+				log.Println(err)
+			}
+			time.Sleep(g.PollDelta)
+			select {
+			case <- closer:
+				break loop
+			case <- time.After(g.PollDelta):
+				continue loop
+			}
+		}
+	}()
+	return closer
 }
 
 func (g *Gmail) GetNewMessages() ([]Mail, error) {
@@ -92,58 +113,4 @@ loop:
 		g.Seen = append(g.Seen, x.Id)
 	}
 	return xs, nil
-}
-
-type Q string
-
-func (q Q) Get() (string, string) {
-	return "q", string(q)
-}
-
-func getClient(config *oauth2.Config, tokFile string) *http.Client {
-	tok, err := tokenFromFile(tokFile)
-	if err != nil {
-		tok = getTokenFromWeb(config)
-		saveToken(tokFile, tok)
-	}
-	return config.Client(context.Background(), tok)
-}
-
-// Request a token from the web, then returns the retrieved token.
-func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
-	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
-	fmt.Printf("Go to the following link in your browser then type the authorization code: \n%v\n", authURL)
-
-	var authCode string
-	if _, err := fmt.Scan(&authCode); err != nil {
-		log.Fatalf("Unable to read authorization code: %v", err)
-	}
-
-	tok, err := config.Exchange(context.TODO(), authCode)
-	if err != nil {
-		log.Fatalf("Unable to retrieve token from web: %v", err)
-	}
-	return tok
-}
-
-// Retrieves a token from a local file.
-func tokenFromFile(file string) (*oauth2.Token, error) {
-	f, err := os.Open(file)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	tok := &oauth2.Token{}
-	err = json.NewDecoder(f).Decode(tok)
-	return tok, err
-}
-
-// Saves a token to a file path.
-func saveToken(path string, token *oauth2.Token) {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		log.Fatalf("Unable to cache oauth token: %v", err)
-	}
-	defer f.Close()
-	json.NewEncoder(f).Encode(token)
 }

@@ -2,20 +2,24 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/gmail/v1"
 	"log"
 	"os"
-	"path/filepath"
+	"os/signal"
 	"strings"
 	"time"
 
 	"github.com/go-toast/toast"
 	cmd "github.com/tmathews/commander"
-	"golang.org/x/oauth2"
 )
+
+var GoogleCredentials []byte
 
 func main() {
 	var args []string
@@ -23,8 +27,9 @@ func main() {
 		args = os.Args[1:]
 	}
 	err := cmd.Exec(args, cmd.Manual("Welcome to Pager", "Let's get our emails!\n"), cmd.M{
-		"auth": cmdAuth,
-		"poll": cmdPoll,
+		"auth":   cmdAuth,
+		"daemon": cmdDaemon,
+		"test":   cmdTest,
 	})
 	if err != nil {
 		switch v := err.(type) {
@@ -39,7 +44,9 @@ func main() {
 }
 
 func cmdAuth(name string, args []string) error {
+	var cfgFilename string
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
+	set.StringVar(&cfgFilename, "c", "config.toml", "Configuration file to save to.")
 	if err := set.Parse(args); err != nil {
 		return err
 	}
@@ -48,63 +55,99 @@ func cmdAuth(name string, args []string) error {
 		return errors.New("invalid profile name")
 	}
 
-	config, err := readConfig("credentials.json")
+	config, err := ReadConfig(cfgFilename)
 	if err != nil {
 		return err
 	}
 
-	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
+	credentials, err := google.ConfigFromJSON(GoogleCredentials, gmail.GmailReadonlyScope, calendar.CalendarReadonlyScope)
+	if err != nil {
+		return err
+	}
+
+	authURL := credentials.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
 	fmt.Printf("Authenticate: \n%v\n\nEnter your token.\n", authURL)
 	var authCode string
 	if _, err := fmt.Scan(&authCode); err != nil {
 		return err
 	}
-	token, err := config.Exchange(context.Background(), authCode)
+	token, err := credentials.Exchange(context.Background(), authCode)
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(filepath.Join(".", profileName+".json"), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+
+	err = config.UpdateToken(profileName, token)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if err := json.NewEncoder(f).Encode(token); err != nil {
+	err = WriteConfig(cfgFilename, config)
+	if err != nil {
 		return err
 	}
-	fmt.Println("Token saved.")
+	fmt.Println("Configuration updated.")
 	return nil
 }
 
-func cmdPoll(name string, args []string) error {
-	var delta time.Duration
+func cmdDaemon(name string, args []string) error {
+	var cfgFilename string
 	set := flag.NewFlagSet(name, flag.ContinueOnError)
-	set.DurationVar(&delta, "t", time.Minute * 5, "The amount of time between polls.")
+	set.StringVar(&cfgFilename, "c", "config.toml", "Configuration TOML file to load.")
 	if err := set.Parse(args); err != nil {
 		return err
 	}
-	profileName := strings.TrimSpace(set.Arg(0))
-	if profileName == "" {
-		return errors.New("invalid profile name")
-	}
 
-	gmail, err := NewGmail("credentials.json", profileName+".json")
+	credentials, err := google.ConfigFromJSON(GoogleCredentials, gmail.GmailReadonlyScope, calendar.CalendarReadonlyScope)
 	if err != nil {
-		panic(err)
+		return err
+	}
+	config, err := ReadConfig(cfgFilename)
+	if err != nil {
+		return err
 	}
 
-	for {
-		PollGmail(gmail)
-		time.Sleep(delta)
+	var emailCh chan []Mail
+	var eventCh chan []Event
+	var closers []chan bool
+	for _, s := range config.GoogleServices {
+		token, err := s.GetToken()
+		if err != nil {
+			return err
+		}
+		gmail, err := NewGmail(credentials, token)
+		if err != nil {
+			return err
+		}
+		gmail.PollDelta = s.PollDeltaEmail
+		closers = append(closers, gmail.Run(emailCh))
+
+		gcal, err := NewGcal(credentials, token)
+		gcal.PollDelta = s.PollDeltaCalendar
+		closers = append(closers, gcal.Run(eventCh))
 	}
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, os.Kill)
+loop:
+	for {
+		select {
+		case <-sig:
+			break loop
+		case ms := <-emailCh:
+			PrintMails(ms)
+		case es := <-eventCh:
+			PrintEvents(es)
+		}
+	}
+
+	for _, c := range closers {
+		c <- true
+		close(c)
+	}
+
 	return nil
 }
 
-func PollGmail(gmail *Gmail) {
-	xs, err := gmail.GetNewMessages()
-	if err != nil {
-		log.Println(err.Error())
-		return
-	}
+func PrintMails(xs []Mail) {
 	if len(xs) == 0 {
 		return
 	} else if len(xs) == 1 {
@@ -119,6 +162,14 @@ func PollGmail(gmail *Gmail) {
 	}
 }
 
+func PrintEvents(xs []Event) {
+	var str string
+	for _, x := range xs {
+		str += fmt.Sprintf("%s 🕛 %s\n", x.Start.Format(time.Kitchen), x.Title)
+	}
+	Notify(fmt.Sprintf("📅 %d Events Today", len(xs)), str)
+}
+
 func Notify(title, body string) error {
 	n := toast.Notification{
 		AppID:   "Pager",
@@ -129,7 +180,12 @@ func Notify(title, body string) error {
 	if err != nil {
 		log.Printf("Notify Error: %s", err.Error())
 	} else {
-		log.Printf("Notified: %s, %s", title, body)
+		log.Printf("Notified\n%s\n%s", title, body)
 	}
 	return err
+}
+
+func cmdTest(name string, args []string) error {
+	fmt.Println("Yay")
+	return nil
 }

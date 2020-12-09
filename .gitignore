@@ -1,0 +1,5 @@
+credentials.go
+*.json
+*.toml
+*.exe
+.idea
