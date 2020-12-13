@@ -2,9 +2,12 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"golang.org/x/oauth2"
+	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/gmail/v1"
 	"os"
 	"time"
 
@@ -14,31 +17,10 @@ import (
 var ErrNoProfile = errors.New("profile does not exist")
 
 type Config struct {
-	GoogleServices []GoogleServiceConfig
-}
-
-type GoogleServiceConfig struct {
-	Name              string
-	Token             string
-	Calendars         []string
 	PollDeltaEmail    time.Duration
 	PollDeltaCalendar time.Duration
+	GoogleServices []GoogleServiceConfig
 }
-
-func (gs *GoogleServiceConfig) GetToken() (*oauth2.Token, error) {
-	var tok *oauth2.Token
-	err := json.NewDecoder(bytes.NewBufferString(gs.Token)).Decode(tok)
-	return tok, err
-}
-
-/*func (c *Config) GetProfile(profileName string) *GoogleServiceConfig {
-	for _, x := range c.GoogleServices {
-		if x.Name == profileName {
-			return &x
-		}
-	}
-	return nil
-}*/
 
 func (c *Config) UpdateToken(profileName string, token *oauth2.Token) error {
 	buf := bytes.NewBuffer([]byte{})
@@ -53,6 +35,42 @@ func (c *Config) UpdateToken(profileName string, token *oauth2.Token) error {
 		}
 	}
 	return ErrNoProfile
+}
+
+type GoogleServiceConfig struct {
+	Name              string
+	Token             string
+	Calendars         []string
+}
+
+func (gs *GoogleServiceConfig) NewGmail(config *oauth2.Config, token *oauth2.Token) (*Gmail, error) {
+	client := config.Client(context.Background(), token)
+	srv, err := gmail.New(client)
+	if err != nil {
+		return nil, err
+	}
+	return &Gmail{
+		Service:   srv,
+	}, nil
+}
+
+func (gs *GoogleServiceConfig) NewCalendar(config *oauth2.Config, token *oauth2.Token) (*Gcal, error) {
+	client := config.Client(context.Background(), token)
+	srv, err := calendar.New(client)
+	if err != nil {
+		return nil, err
+	}
+	return &Gcal{
+		Service:   srv,
+		Events:    make(map[string][]Event),
+		Calendars: gs.Calendars,
+	}, nil
+}
+
+func (gs *GoogleServiceConfig) NewToken() (*oauth2.Token, error) {
+	var tok oauth2.Token
+	err := json.NewDecoder(bytes.NewBufferString(gs.Token)).Decode(&tok)
+	return &tok, err
 }
 
 func ReadConfig(filename string) (Config, error) {

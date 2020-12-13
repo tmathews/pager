@@ -1,13 +1,8 @@
 package main
 
 import (
-	"context"
-	"io/ioutil"
-	"log"
 	"time"
 
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 	"google.golang.org/api/gmail/v1"
 )
 
@@ -17,7 +12,6 @@ type Gmail struct {
 	// This is a list of all messages we have seen. We are just storing this in memory just because I don't want to
 	// write to a file.
 	Seen      []string
-	PollDelta time.Duration
 }
 
 type Mail struct {
@@ -32,48 +26,6 @@ type Q string
 
 func (q Q) Get() (string, string) {
 	return "q", string(q)
-}
-
-func ReadCredentials(filename string, scope ...string) (*oauth2.Config, error) {
-	b, err := ioutil.ReadFile(filename)
-	if err != nil {
-		return nil, err
-	}
-	return google.ConfigFromJSON(b, scope...)
-}
-
-func NewGmail(config *oauth2.Config, token *oauth2.Token) (*Gmail, error) {
-	client := config.Client(context.Background(), token)
-	srv, err := gmail.New(client)
-	if err != nil {
-		return nil, err
-	}
-	return &Gmail{
-		Service: srv,
-	}, nil
-}
-
-func (g *Gmail) Run(ch chan []Mail) chan bool {
-	closer := make(chan bool)
-	go func() {
-	loop:
-		for {
-			xs, err := g.GetNewMessages()
-			if err == nil {
-				ch <- xs
-			} else {
-				log.Println(err)
-			}
-			time.Sleep(g.PollDelta)
-			select {
-			case <- closer:
-				break loop
-			case <- time.After(g.PollDelta):
-				continue loop
-			}
-		}
-	}()
-	return closer
 }
 
 func (g *Gmail) GetNewMessages() ([]Mail, error) {

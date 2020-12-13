@@ -11,7 +11,6 @@ import (
 	"google.golang.org/api/gmail/v1"
 	"log"
 	"os"
-	"os/signal"
 	"strings"
 	"time"
 
@@ -29,7 +28,6 @@ func main() {
 	err := cmd.Exec(args, cmd.Manual("Welcome to Pager", "Let's get our emails!\n"), cmd.M{
 		"auth":   cmdAuth,
 		"daemon": cmdDaemon,
-		"test":   cmdTest,
 	})
 	if err != nil {
 		switch v := err.(type) {
@@ -105,46 +103,102 @@ func cmdDaemon(name string, args []string) error {
 		return err
 	}
 
-	var emailCh chan []Mail
-	var eventCh chan []Event
-	var closers []chan bool
+	var mailboxes []*Gmail
+	var calendars []*Gcal
+	emailCh := make(chan []Mail)
+	eventCh := make(chan []Event)
 	for _, s := range config.GoogleServices {
-		token, err := s.GetToken()
+		token, err := s.NewToken()
 		if err != nil {
 			return err
 		}
-		gmail, err := NewGmail(credentials, token)
+		gmail, err := s.NewGmail(credentials, token)
 		if err != nil {
 			return err
 		}
-		gmail.PollDelta = s.PollDeltaEmail
-		closers = append(closers, gmail.Run(emailCh))
+		mailboxes = append(mailboxes, gmail)
 
-		gcal, err := NewGcal(credentials, token)
-		gcal.PollDelta = s.PollDeltaCalendar
-		closers = append(closers, gcal.Run(eventCh))
+		gcal, err := s.NewCalendar(credentials, token)
+		if err != nil {
+			return err
+		}
+		calendars = append(calendars, gcal)
 	}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, os.Kill)
-loop:
+	// We like to poll all services at the same time to keep things in orderly fashion
+	go RunMail(emailCh, mailboxes, config.PollDeltaEmail)
+	go RunCalendars(eventCh, calendars, config.PollDeltaCalendar)
+
+	log.Println("Here we go!")
+
 	for {
 		select {
-		case <-sig:
-			break loop
 		case ms := <-emailCh:
 			PrintMails(ms)
 		case es := <-eventCh:
 			PrintEvents(es)
 		}
 	}
+}
 
-	for _, c := range closers {
-		c <- true
-		close(c)
-	}
+func RunMail(ch chan []Mail, mailboxes []*Gmail, delta time.Duration) chan bool {
+	closer := make(chan bool)
+	go func() {
+	loop:
+		for {
+			var xs []Mail
+			for _, g := range mailboxes {
+				ys, err := g.GetNewMessages()
+				if err != nil {
+					log.Println(err)
+				} else {
+					xs = append(xs, ys...)
+				}
+			}
+			if len(xs) > 0 {
+				ch <- xs
+			}
+			select {
+			case <- closer:
+				break loop
+			case <- time.After(delta):
+				continue loop
+			}
+		}
+	}()
+	return closer
+}
 
-	return nil
+func RunCalendars(ch chan []Event, calendars []*Gcal, delta time.Duration) chan bool {
+	closer := make(chan bool)
+	go func() {
+		started := time.Now()
+	loop:
+		for {
+			now := time.Now()
+			if now.Sub(started) >= delta {
+				for _, y := range calendars {
+					if err := y.RefreshAll(); err != nil {
+						log.Println(err)
+					}
+				}
+			}
+			var xs []Event
+			for _, y := range calendars {
+				xs = append(xs, y.CheckAll(time.Second)...)
+			}
+			if len(xs) > 0 {
+				ch <- xs
+			}
+			select {
+			case <-closer:
+				break loop
+			case <-time.After(time.Second):
+				continue loop
+			}
+		}
+	}()
+	return closer
 }
 
 func PrintMails(xs []Mail) {
@@ -152,29 +206,38 @@ func PrintMails(xs []Mail) {
 		return
 	} else if len(xs) == 1 {
 		mail := xs[0]
-		Notify(fmt.Sprintf("📫 %s", mail.From), mail.Subject)
-	} else if len(xs) > 1 {
-		var body string
-		for _, y := range xs {
-			body += fmt.Sprintf("📧 %s\n", y.Subject)
-		}
-		Notify(fmt.Sprintf("📫 %d New Emails", len(xs)), body)
+		Notify(fmt.Sprintf("📫 %s", mail.From), mail.Subject, "https://gmail.com", toast.Mail)
+		return
 	}
+	var body string
+	for _, y := range xs {
+		body += fmt.Sprintf("📧 %s\n", y.Subject)
+	}
+	Notify(fmt.Sprintf("📫 %d New Emails", len(xs)), body, "https://gmail.com", toast.Mail)
 }
 
 func PrintEvents(xs []Event) {
+	if len(xs) == 0 {
+		return
+	} else if len(xs) == 1 {
+		event := xs[0]
+		Notify(fmt.Sprintf("📅 %s", event.Title), "", "https://calendar.google.com", toast.Reminder)
+		return
+	}
 	var str string
 	for _, x := range xs {
 		str += fmt.Sprintf("%s 🕛 %s\n", x.Start.Format(time.Kitchen), x.Title)
 	}
-	Notify(fmt.Sprintf("📅 %d Events Today", len(xs)), str)
+	Notify(fmt.Sprintf("📅 %d Events Today", len(xs)), str, "https://calendar.google.com", toast.Reminder)
 }
 
-func Notify(title, body string) error {
+func Notify(title, body, action string, sound toast.Audio) error {
 	n := toast.Notification{
 		AppID:   "Pager",
 		Title:   title,
 		Message: body,
+		Audio:   sound,
+		ActivationArguments: action,
 	}
 	err := n.Push()
 	if err != nil {
@@ -183,9 +246,4 @@ func Notify(title, body string) error {
 		log.Printf("Notified\n%s\n%s", title, body)
 	}
 	return err
-}
-
-func cmdTest(name string, args []string) error {
-	fmt.Println("Yay")
-	return nil
 }
