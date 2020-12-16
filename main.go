@@ -14,7 +14,6 @@ import (
 	"github.com/tmathews/windows-toast"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	"golang.org/x/sys/windows/svc"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/gmail/v1"
 )
