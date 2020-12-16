@@ -5,17 +5,18 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
-	"google.golang.org/api/calendar/v3"
-	"google.golang.org/api/gmail/v1"
 	"log"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/go-toast/toast"
 	cmd "github.com/tmathews/commander"
+	"github.com/tmathews/windows-toast"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	"golang.org/x/sys/windows/svc"
+	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/gmail/v1"
 )
 
 var GoogleCredentials []byte
