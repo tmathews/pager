@@ -3,7 +3,7 @@
 Pager is a Windows 10 background service which displays toast notifications for your Google account's mail & calendar 
 services.
 
-![Screenshot](./Screenshot 1.jpg)
+![Screenshot](./Screenshot%201.jpg)
 
 This application is intended for power users who are familiar with operating PowerShell.
 
