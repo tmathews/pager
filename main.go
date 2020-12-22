@@ -5,47 +5,29 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
 	"os"
-	"path/filepath"
+	"os/signal"
 	"strings"
+	"time"
 
 	cmd "github.com/tmathews/commander"
-	toast "github.com/tmathews/windows-toast"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	"golang.org/x/sys/windows/svc"
-	"golang.org/x/sys/windows/svc/debug"
-	"golang.org/x/sys/windows/svc/eventlog"
-	"golang.org/x/sys/windows/svc/mgr"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/gmail/v1"
 )
 
 var GoogleCredentials []byte
 
-const ServiceName = "Pager"
-
 func main() {
-	is, err := svc.IsWindowsService()
-	if err != nil {
-		log.Fatalf("Failed IsWindowsService check: %s", err.Error())
-		return
-	} else if is {
-		runService(false)
-		return
-	}
-
 	var args []string
 	if len(os.Args) >= 2 {
 		args = os.Args[1:]
 	}
-	err = cmd.Exec(args, cmd.Manual("Welcome to Pager", "Let's get our emails!\n"), cmd.M{
-		"setup":        cmdSetup,
+	err := cmd.Exec(args, cmd.Manual("Welcome to Pager", "Let's get our emails!\n"), cmd.M{
 		"profile":      cmdProfile,
 		"authenticate": cmdAuth,
-		"service":      cmdService,
-		"test-toast":   cmdTest,
+		"run":          cmdRun,
 	})
 	if err != nil {
 		switch v := err.(type) {
@@ -57,81 +39,6 @@ func main() {
 			os.Exit(1)
 		}
 	}
-}
-
-func runService(fake bool) error {
-	var fn func(string, svc.Handler) error
-	var l debug.Log
-	var err error
-	if fake {
-		fn = debug.Run
-		l = debug.New(ServiceName)
-	} else {
-		fn = svc.Run
-		l, err = eventlog.Open(ServiceName)
-		if err != nil {
-			return err
-		}
-	}
-	defer l.Close()
-	return fn("Pager", &Service{
-		Log: l,
-	})
-}
-
-func cmdSetup(name string, args []string) error {
-	var remove bool
-	set := flag.NewFlagSet(name, flag.ExitOnError)
-	set.BoolVar(&remove, "uninstall", false, "Uninstall the service.")
-	set.Usage = func() {
-		fmt.Println("pager setup [-flags...]")
-		set.PrintDefaults()
-	}
-	if err := set.Parse(args); err != nil {
-		return err
-	}
-
-	m, err := mgr.Connect()
-	if err != nil {
-		return err
-	}
-	defer m.Disconnect()
-
-	s, err := m.OpenService(ServiceName)
-
-	// Handle the case where we want to remove the service or check if it exists if we installing
-	if err == nil && !remove {
-		return errors.New("service already exists")
-	} else if err != nil && remove {
-		return err
-	} else if s != nil && remove {
-		eventlog.Remove(ServiceName)
-		s.Delete()
-		s.Close()
-		return nil
-	}
-
-	exPath, err := exePath()
-	if err != nil {
-		return fmt.Errorf("executable path not found: %s", err.Error())
-	}
-
-	// Install the service & logging system
-	s, err = m.CreateService(ServiceName, exPath, mgr.Config{
-		DisplayName: ServiceName,
-		Description: "Google Pager application for showing Gmail & Calendar notifications.",
-		StartType:   mgr.StartAutomatic,
-	})
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	err = eventlog.InstallAsEventCreate(ServiceName, eventlog.Error|eventlog.Warning|eventlog.Info)
-	if err != nil {
-		s.Delete()
-		return errors.New("create event logger failed")
-	}
-	return nil
 }
 
 func cmdProfile(name string, args []string) error {
@@ -205,7 +112,7 @@ func cmdProfile(name string, args []string) error {
 func cmdAuth(name string, args []string) error {
 	var cfgFilename string
 	set := flag.NewFlagSet(name, flag.ExitOnError)
-	set.StringVar(&cfgFilename, "c", GetConfigFilename(), "Configuration file to save to.")
+	set.StringVar(&cfgFilename, "config", GetConfigFilename(), "Configuration file to save to.")
 	if err := set.Parse(args); err != nil {
 		return err
 	}
@@ -238,12 +145,34 @@ func cmdAuth(name string, args []string) error {
 	return nil
 }
 
-func cmdService(_ string, _ []string) error {
-	return runService(true)
-}
+func cmdRun(name string, args []string) error {
+	var cfgFilename string
+	set := flag.NewFlagSet(name, flag.ExitOnError)
+	set.StringVar(&cfgFilename, "config", GetConfigFilename(), "Configuration file to save to.")
+	if err := set.Parse(args); err != nil {
+		return err
+	}
 
-func cmdTest(_ string, _ []string) error {
-	return Notify("Test", "If you see this notification, the test has been successful.", "", toast.Default)
+	s, err := NewService(cfgFilename)
+	if err != nil {
+		return err
+	}
+
+	s.Log.Println("Running.")
+	stop := make(chan bool)
+	sig := make(chan os.Signal)
+	signal.Notify(sig)
+	go s.Run(time.Time{}, stop)
+loop:
+	for {
+		select {
+		case <-sig:
+			stop <- true
+			break loop
+		}
+	}
+	s.Log.Println("Exiting.")
+	return nil
 }
 
 func authProfile(profile *GoogleServiceConfig) error {
@@ -264,30 +193,4 @@ func authProfile(profile *GoogleServiceConfig) error {
 	}
 
 	return profile.UpdateToken(token)
-}
-
-func exePath() (string, error) {
-	p, err := filepath.Abs(os.Args[0])
-	if err != nil {
-		return "", err
-	}
-	check := func(p string) error {
-		fi, err := os.Stat(p)
-		if err == nil && fi.IsDir() {
-			return fmt.Errorf("%s is directory", p)
-		}
-		return err
-	}
-	// First check if the original path provided is a binary
-	if err = check(p); err == nil {
-		return p, nil
-	}
-	// Let's assume they forgot the extension ands try that
-	if filepath.Ext(p) == "" {
-		p += ".exe"
-		if err = check(p); err == nil {
-			return p, nil
-		}
-	}
-	return "", err
 }

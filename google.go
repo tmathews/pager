@@ -1,8 +1,9 @@
 package main
 
 import (
-	"golang.org/x/oauth2"
 	"time"
+
+	"golang.org/x/oauth2"
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/gmail/v1"
@@ -107,7 +108,6 @@ func (g *GoogleService) RefreshAgenda(id string) error {
 
 	g.Events[id] = make([]Event, len(r.Items))
 	for i, e := range r.Items {
-		//fmt.Println(e.Id, e.Summary, e.Start, e.End)
 		start, _ := time.Parse(time.RFC3339, e.Start.DateTime)
 		start = time.Date(now.Year(), now.Month(), now.Day(), start.Hour(), start.Minute(), start.Second(), start.Nanosecond(), start.Location())
 		var end time.Time
