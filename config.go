@@ -17,7 +17,6 @@ import (
 
 var (
 	ErrNoProfile = errors.New("profile does not exist")
-	ErrNoToken   = errors.New("no auth token")
 )
 
 type Config struct {
@@ -102,7 +101,7 @@ func (gsc *GoogleServiceConfig) NewGoogleService(config *oauth2.Config) (*Google
 		Gmail:     m,
 		Calendar:  c,
 		Calendars: gsc.Calendars,
-		Events:    make(map[string][]Event),
+		Events:    make(map[string]map[string]Event),
 	}, nil
 }
 

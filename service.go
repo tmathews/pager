@@ -6,11 +6,9 @@ import (
 	"os"
 	"time"
 
-	toast "github.com/tmathews/windows-toast"
+	"github.com/tmathews/windows-toast"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
-	"google.golang.org/api/calendar/v3"
-	"google.golang.org/api/gmail/v1"
 )
 
 type Service struct {
@@ -21,7 +19,7 @@ type Service struct {
 }
 
 func NewService(filename string) (*Service, error) {
-	credentials, err := google.ConfigFromJSON(GoogleCredentials, gmail.GmailReadonlyScope, calendar.CalendarReadonlyScope)
+	credentials, err := google.ConfigFromJSON(GoogleCredentials, GoogleScopes...)
 	if err != nil {
 		return nil, err
 	}
@@ -45,9 +43,10 @@ func NewService(filename string) (*Service, error) {
 	}, nil
 }
 
-func (s *Service) Run(start time.Time, stop chan bool) {
-	mailTime := start
-	calTime := start
+func (s *Service) Run(stop chan bool) {
+	mailTime := time.Time{}
+	calTime := time.Time{}
+	last := time.Now()
 loop:
 	for {
 		select {
@@ -67,7 +66,7 @@ loop:
 				calTime = time.Now()
 			}
 
-			// Let's go through everything we haven't seen or is happening right now and print it
+			// Let's find mail & events to print
 			var ms []Mail
 			var es []Event
 			for _, g := range s.GoogleServices {
@@ -77,16 +76,24 @@ loop:
 						ms = append(ms, m)
 					}
 				}
-				for _, xs := range g.Events {
-					for _, e := range xs {
-						if now.Sub(e.Start) <= time.Second {
-							es = append(es, e)
+				for i, xs := range g.Events {
+					for id, e := range xs {
+						for marker, seen := range e.Markers {
+							if seen {
+								continue
+							}
+							mtime := e.Start.Add(-1 * marker)
+							if mtime.After(last) && (mtime.Before(now) || mtime.Equal(now)) {
+								es = append(es, e)
+								g.Events[i][id].Markers[marker] = true
+							}
 						}
 					}
 				}
 			}
 			s.PrintMails(ms)
 			s.PrintEvents(es)
+			last = now
 		}
 	}
 }
@@ -136,6 +143,7 @@ func (s *Service) PollEvents() {
 		if err != nil {
 			s.Log.Printf("[%s] RefreshAllAgendas error: %s", g.Name, err.Error())
 		}
+		fmt.Println(g.Events)
 	}
 }
 

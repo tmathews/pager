@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"time"
 
 	cmd "github.com/tmathews/commander"
 	"golang.org/x/oauth2"
@@ -17,7 +16,13 @@ import (
 	"google.golang.org/api/gmail/v1"
 )
 
-var GoogleCredentials []byte
+var (
+	GoogleCredentials []byte
+	GoogleScopes      = []string{
+		gmail.GmailReadonlyScope,
+		calendar.CalendarEventsReadonlyScope,
+	}
+)
 
 func main() {
 	var args []string
@@ -126,6 +131,7 @@ func cmdAuth(name string, args []string) error {
 		return err
 	}
 
+	var found bool
 	for i, profile := range config.GoogleServices {
 		if profile.Name != profileName {
 			continue
@@ -134,7 +140,11 @@ func cmdAuth(name string, args []string) error {
 			return err
 		}
 		config.GoogleServices[i] = profile
+		found = true
 		break
+	}
+	if !found {
+		return ErrNoProfile
 	}
 
 	err = WriteConfig(cfgFilename, config)
@@ -162,7 +172,7 @@ func cmdRun(name string, args []string) error {
 	stop := make(chan bool)
 	sig := make(chan os.Signal)
 	signal.Notify(sig)
-	go s.Run(time.Time{}, stop)
+	go s.Run(stop)
 loop:
 	for {
 		select {
@@ -176,7 +186,7 @@ loop:
 }
 
 func authProfile(profile *GoogleServiceConfig) error {
-	credentials, err := google.ConfigFromJSON(GoogleCredentials, gmail.GmailReadonlyScope, calendar.CalendarReadonlyScope)
+	credentials, err := google.ConfigFromJSON(GoogleCredentials, GoogleScopes...)
 	if err != nil {
 		return err
 	}

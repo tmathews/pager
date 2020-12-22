@@ -18,6 +18,8 @@ This application is intended for power users who are familiar with operating Pow
 
 Your user start up folder can be found at: `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup`.
 
+To update Pager simply replace the executable file (where you installed it) manually.
+
 ## Building for Yourself
 
 1. Create an additional Go file, perhaps `credentials.go`, and set the GoogleCredentials byte array to the JSON string
@@ -68,14 +70,14 @@ command.
 This software, Pager, does not track and or collect any personal information. The software does not communicate with 
 any parties than otherwise listed below.
 
- * Google - To communicate with Google's services to enable core functionality of the software.
+ * Google - To communicate with Google's services to enable core functionality of the software. See scope usage below.
 
 ### Google Scope Usage
 
- * Gmail (Read Only) - To pull the latest unread emails within the last day. These are then displayed to the user with a
+ * gmail.readonly - To pull the latest unread emails within the last day. These are then displayed to the user with a
    toast notification. Emails are polled at the desired rate in the settings.
- * Calendar (Read Only) - To pull the events happening in the next 12 hours. Upon an event starting it is displayed with
-   a toast notification. Events are polled at the desired rate in the settings.
+ * calendar.events.readonly - To pull the events happening in the next 12 hours. Upon an event starting it is displayed 
+   with a toast notification. Events are polled at the desired rate in the settings.
 
 ## Terms & Conditions
 

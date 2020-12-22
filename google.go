@@ -14,7 +14,7 @@ type GoogleService struct {
 	Token     *oauth2.Token
 	Gmail     *gmail.Service
 	Calendar  *calendar.Service
-	Events    map[string][]Event
+	Events    map[string]map[string]Event
 	Mails     []Mail
 	Calendars []string
 }
@@ -29,10 +29,11 @@ type Mail struct {
 }
 
 type Event struct {
-	Id    string
-	Title string
-	Start time.Time
-	End   time.Time
+	Id      string
+	Title   string
+	Start   time.Time
+	End     time.Time
+	Markers map[time.Duration]bool
 }
 
 type Q string
@@ -101,13 +102,27 @@ func (g *GoogleService) RefreshAllAgendas() error {
 
 func (g *GoogleService) RefreshAgenda(id string) error {
 	now := time.Now()
-	r, err := g.Calendar.Events.List(id).TimeMin(now.Format(time.RFC3339)).TimeMax(time.Now().Add(time.Hour * 12).Format(time.RFC3339)).SingleEvents(true).OrderBy("startTime").Do()
+	r, err := g.Calendar.Events.List(id).
+		TimeMin(now.Format(time.RFC3339)).
+		TimeMax(time.Now().Add(time.Hour * 12).Format(time.RFC3339)).
+		SingleEvents(true).
+		OrderBy("startTime").
+		Do()
 	if err != nil {
 		return err
 	}
+	markers := map[time.Duration]bool{0: false}
+	for _, v := range r.DefaultReminders {
+		markers[time.Duration(v.Minutes)*time.Minute] = false
+	}
 
-	g.Events[id] = make([]Event, len(r.Items))
-	for i, e := range r.Items {
+	var agenda map[string]Event
+	if g.Events[id] == nil {
+		agenda = make(map[string]Event)
+	} else {
+		agenda = g.Events[id]
+	}
+	for _, e := range r.Items {
 		start, _ := time.Parse(time.RFC3339, e.Start.DateTime)
 		start = time.Date(now.Year(), now.Month(), now.Day(), start.Hour(), start.Minute(), start.Second(), start.Nanosecond(), start.Location())
 		var end time.Time
@@ -115,12 +130,31 @@ func (g *GoogleService) RefreshAgenda(id string) error {
 			end, _ = time.Parse(time.RFC3339, e.End.DateTime)
 			end = time.Date(now.Year(), now.Month(), now.Day(), end.Hour(), end.Minute(), end.Second(), end.Nanosecond(), end.Location())
 		}
-		g.Events[id][i] = Event{
-			Id:    e.Id,
-			Title: e.Summary,
-			Start: start,
-			End:   end,
+		mxs := make(map[time.Duration]bool)
+		if e.Reminders.UseDefault {
+			for m, s := range markers {
+				mxs[m] = s
+			}
 		}
+		for _, v := range e.Reminders.Overrides {
+			mxs[time.Duration(v.Minutes)*time.Minute] = false
+		}
+
+		// Update the event, via new event, and it's markers
+		ev := Event{
+			Id:      e.Id,
+			Title:   e.Summary,
+			Start:   start,
+			End:     end,
+			Markers: mxs,
+		}
+		if x, ok := agenda[ev.Id]; ok {
+			for m, seen := range x.Markers {
+				ev.Markers[m] = seen
+			}
+		}
+		agenda[ev.Id] = ev
 	}
+	g.Events[id] = agenda
 	return nil
 }
