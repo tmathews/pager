@@ -50,11 +50,13 @@ Please see [https://toml.io/en/](https://toml.io/en/) for more information on th
 
 #### PollDeltaEmail
 
-The time in milliseconds in which to poll all mail services for new emails.
+The time in nanoseconds in which to poll all mail services for new emails. Minimum value should be 1 second. Suggested
+setting is 5 minutes.
 
 #### PollDeltaCalendar
 
-The time in milliseconds in which to poll all calendar services to refresh the agenda.
+The time in nanoseconds in which to poll all calendar services to refresh the agenda. Minimum value should be 1 second.
+Suggested setting is 5 minutes.
 
 #### GoogleServices
 
